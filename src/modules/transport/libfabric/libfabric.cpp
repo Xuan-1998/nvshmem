@@ -390,7 +390,8 @@ out:
 nvshmemt_libfabric_gdr_op_ctx_t *inplace_copy_sig_op_to_gdr_op(
     nvshmemt_libfabric_gdr_signal_op *sig_op, int ep_index) {
     nvshmemt_libfabric_gdr_op_ctx_t *amo;
-    uint16_t op = sig_op->op;
+    uint8_t op = sig_op->op;
+    uint8_t elem_size = sig_op->elem_size;
     uint64_t sig_val = sig_op->sig_val;
     void *target_addr = sig_op->target_addr;
     uint32_t src_pe = sig_op->src_pe;
@@ -403,7 +404,7 @@ nvshmemt_libfabric_gdr_op_ctx_t *inplace_copy_sig_op_to_gdr_op(
     amo->send_amo.target_addr = target_addr;
     amo->send_amo.swap_add = sig_val;
     amo->send_amo.src_pe = src_pe;
-    amo->send_amo.size = 8;
+    amo->send_amo.size = elem_size;
     amo->send_amo.sequence_count = sequence_count;
 
     return amo;
@@ -438,7 +439,11 @@ static void nvshmemt_libfabric_put_signal_ack_completion(nvshmemt_libfabric_stat
     ep.completed_staged_atomics++;
 }
 
-static inline bool is_signal_only_op(nvshmemi_amo_t op) {
+static inline bool is_signal_only_op(nvshmemi_amo_t op, size_t elem_size) {
+    /* Route AMO_ADD through signal path only for 32-bit (DeepEP nvshmem_int_atomic_add).
+     * 64-bit AMO_ADD (e.g., emulated atomic_inc on uint64) stays on the staged-atomic
+     * path to avoid exhausting signal sequence numbers under high-throughput workloads. */
+    if (op == NVSHMEMI_AMO_ADD) return elem_size == 4;
     return (op == NVSHMEMI_AMO_SIGNAL || op == NVSHMEMI_AMO_SIGNAL_SET ||
             op == NVSHMEMI_AMO_SIGNAL_ADD);
 }
@@ -1143,7 +1148,7 @@ static int nvshmemt_libfabric_gdr_amo(struct nvshmem_transport *transport, int p
     target_ep = pe * libfabric_state->eps.size() + ep_idx;
 
     /* Signal-only operations use gdr_signal path with num_writes=0 */
-    if (is_signal_only_op(verb.desc)) {
+    if (is_signal_only_op(verb.desc, bytesdesc.elembytes)) {
         /* Use host_signal_state for qp_index 0, proxy_signal_state otherwise */
         nvshmemt_libfabric_signal_state_t *signal_state =
             (qp_index == NVSHMEMX_QP_HOST) ? &libfabric_state->host_signal_state 
@@ -1378,6 +1383,7 @@ static int nvshmemt_libfabric_gdr_signal(struct nvshmem_transport *transport, in
     signal = (nvshmemt_libfabric_gdr_signal_op_t *)context;
     signal->type = NVSHMEMT_LIBFABRIC_MATCH;
     signal->op = verb.desc;
+    signal->elem_size = (uint8_t)bytesdesc.elembytes;
     signal->sequence_count = sequence_count;
     signal->target_addr = remote->remote_memdesc.ptr;
     signal->sig_val = remote->val;
