@@ -998,15 +998,38 @@ static int nvshmemt_libfabric_rma_impl(struct nvshmem_transport *tcurr, int pe, 
         else
             remote_addr = (uintptr_t)remote->offset;
 
-        do {
-            if (likely(imm_data != NULL)) {
-                status = fi_writedata(ep.endpoint, local->ptr, op_size, local_mr_desc,
-                                      *imm_data, target_ep, remote_addr, remote_handle->key, context);
-            } else
-                status = fi_write(ep.endpoint, local->ptr, op_size, local_mr_desc, target_ep,
-                                  remote_addr, remote_handle->key, context);
-        } while (try_again(tcurr, &status, &num_retries, qp_index,
-                           NVSHMEMT_LIBFABRIC_TRY_AGAIN_CALL_SITE_RMA_IMPL_OP_PUT));
+        if (verb.flags & NVSHMEM_RMA_FLAG_MORE) {
+            p_op_l_iov.iov_base = local->ptr;
+            p_op_l_iov.iov_len = op_size;
+            p_op_r_iov.addr = remote_addr;
+            p_op_r_iov.len = op_size;
+            p_op_r_iov.key = remote_handle->key;
+            memset(&p_op_msg, 0, sizeof(p_op_msg));
+            p_op_msg.msg_iov = &p_op_l_iov;
+            p_op_msg.desc = &local_mr_desc;
+            p_op_msg.iov_count = 1;
+            p_op_msg.addr = target_ep;
+            p_op_msg.rma_iov = &p_op_r_iov;
+            p_op_msg.rma_iov_count = 1;
+            p_op_msg.context = context;
+            if (imm_data) p_op_msg.data = *imm_data;
+            uint64_t msg_flags = FI_MORE;
+            if (imm_data) msg_flags |= FI_REMOTE_CQ_DATA;
+            do {
+                status = fi_writemsg(ep.endpoint, &p_op_msg, msg_flags);
+            } while (try_again(tcurr, &status, &num_retries, qp_index,
+                               NVSHMEMT_LIBFABRIC_TRY_AGAIN_CALL_SITE_RMA_IMPL_OP_PUT));
+        } else {
+            do {
+                if (likely(imm_data != NULL)) {
+                    status = fi_writedata(ep.endpoint, local->ptr, op_size, local_mr_desc,
+                                          *imm_data, target_ep, remote_addr, remote_handle->key, context);
+                } else
+                    status = fi_write(ep.endpoint, local->ptr, op_size, local_mr_desc, target_ep,
+                                      remote_addr, remote_handle->key, context);
+            } while (try_again(tcurr, &status, &num_retries, qp_index,
+                               NVSHMEMT_LIBFABRIC_TRY_AGAIN_CALL_SITE_RMA_IMPL_OP_PUT));
+        }
 
     } else if (likely(verb.desc == NVSHMEMI_OP_P)) {
         if (libfabric_state->provider == NVSHMEMT_LIBFABRIC_PROVIDER_EFA) {

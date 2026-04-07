@@ -73,11 +73,20 @@ typedef struct nvshmem_transport_pe_info {
     cudaUUID_t gpu_uuid;
 } nvshmem_transport_pe_info_t;
 
+/*
+ * Transport-agnostic RMA batching hint.
+ * NVSHMEM_RMA_FLAG_MORE in rma_verb_t.flags indicates more RMA ops follow
+ * immediately, transports may defer doorbell/flush. Transports that do not
+ * support batching safely ignore the flag.
+ */
+#define NVSHMEM_RMA_FLAG_MORE 0x1
+
 typedef struct rma_verb {
     nvshmemi_op_t desc;
     int is_nbi;
     int is_stream;
     cudaStream_t cstrm;
+    uint32_t flags;
 } rma_verb_t;
 
 typedef struct rma_memdesc {
