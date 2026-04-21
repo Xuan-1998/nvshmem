@@ -1137,15 +1137,42 @@ static int nvshmemt_libfabric_rma_impl(struct nvshmem_transport *tcurr, int pe, 
         else
             remote_addr = (uintptr_t)remote->offset;
 
-        do {
-            if (likely(imm_data != NULL)) {
-                status = fi_writedata(ep.endpoint, local->ptr, op_size, local_mr_desc,
-                                      *imm_data, target_ep, remote_addr, remote_handle->key, context);
-            } else
-                status = fi_write(ep.endpoint, local->ptr, op_size, local_mr_desc, target_ep,
-                                  remote_addr, remote_handle->key, context);
-        } while (try_again(tcurr, &status, &num_retries, qp_index,
-                           NVSHMEMT_LIBFABRIC_TRY_AGAIN_CALL_SITE_RMA_IMPL_OP_PUT));
+        if (verb.flags & NVSHMEM_RMA_FLAG_MORE) {
+            memset(&p_op_l_iov, 0, sizeof(p_op_l_iov));
+            memset(&p_op_r_iov, 0, sizeof(p_op_r_iov));
+            memset(&p_op_msg, 0, sizeof(p_op_msg));
+            p_op_l_iov.iov_base = local->ptr;
+            p_op_l_iov.iov_len = op_size;
+            p_op_r_iov.addr = remote_addr;
+            p_op_r_iov.len = op_size;
+            p_op_r_iov.key = remote_handle->key;
+            p_op_msg.msg_iov = &p_op_l_iov;
+            p_op_msg.desc = &local_mr_desc;
+            p_op_msg.iov_count = 1;
+            p_op_msg.addr = target_ep;
+            p_op_msg.rma_iov = &p_op_r_iov;
+            p_op_msg.rma_iov_count = 1;
+            p_op_msg.context = context;
+            if (imm_data) p_op_msg.data = *imm_data;
+            uint64_t msg_flags = FI_MORE;
+            if (imm_data) msg_flags |= FI_REMOTE_CQ_DATA;
+            do {
+                status = fi_writemsg(ep.endpoint, &p_op_msg, msg_flags);
+            } while (try_again(tcurr, &status, &num_retries, qp_index,
+                               NVSHMEMT_LIBFABRIC_TRY_AGAIN_CALL_SITE_RMA_IMPL_OP_PUT));
+            libfabric_state->fimore_pending_ep = ep_idx;
+        } else {
+            do {
+                if (likely(imm_data != NULL)) {
+                    status = fi_writedata(ep.endpoint, local->ptr, op_size, local_mr_desc,
+                                          *imm_data, target_ep, remote_addr, remote_handle->key, context);
+                } else
+                    status = fi_write(ep.endpoint, local->ptr, op_size, local_mr_desc, target_ep,
+                                      remote_addr, remote_handle->key, context);
+            } while (try_again(tcurr, &status, &num_retries, qp_index,
+                               NVSHMEMT_LIBFABRIC_TRY_AGAIN_CALL_SITE_RMA_IMPL_OP_PUT));
+            libfabric_state->fimore_pending_ep = -1;
+        }
 
     } else if (likely(verb.desc == NVSHMEMI_OP_P)) {
         if (libfabric_state->provider == NVSHMEMT_LIBFABRIC_PROVIDER_EFA) {
@@ -1226,7 +1253,10 @@ static int nvshmemt_libfabric_rma(struct nvshmem_transport *tcurr, int pe, rma_v
     uint32_t imm_data_val = 0;
     uint32_t *imm_data = NULL;
     int status = 0;
-    int ep_idx = get_next_ep(libfabric_state, qp_index);
+    /* Stick to same EP while FI_MORE doorbell is deferred (rma only) */
+    int ep_idx = (libfabric_state->fimore_pending_ep >= 0)
+                     ? libfabric_state->fimore_pending_ep
+                     : get_next_ep(libfabric_state, qp_index);
     nvshmemt_libfabric_endpoint_t &ep = *(libfabric_state->eps[ep_idx]);
 
     // Generate sequence number for P and PUT operations when ordering is needed
@@ -2014,6 +2044,7 @@ static int nvshmemt_libfabric_connect_endpoints(nvshmem_transport_t t, int *sele
     /* One-time initializations */
     t->max_op_len = UINT64_MAX;
     state->proxy_ep_cntr = 0;
+    state->fimore_pending_ep = -1;
 
     memset(&cq_attr, 0, sizeof(struct fi_cq_attr));
     if (state->provider == NVSHMEMT_LIBFABRIC_PROVIDER_SLINGSHOT) {

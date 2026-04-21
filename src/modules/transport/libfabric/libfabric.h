@@ -655,6 +655,7 @@ typedef struct {
     int num_selected_devs;
     int max_nic_per_pe;
     std::atomic<uint32_t> proxy_ep_cntr;
+    int fimore_pending_ep;  /* ep with deferred FI_MORE doorbell */
 
     /* Required for staged_amo */
     std::vector<std::unique_ptr<threadSafeOpQueue>> op_queue;
