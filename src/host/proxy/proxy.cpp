@@ -441,21 +441,27 @@ inline int process_channel_dma(proxy_state_t *state, proxy_channel_t *ch, int *i
         verb.is_nbi = 1;
         verb.is_stream = 0;
         verb.cstrm = NULL;
-        verb.flags = 0;
-        /* Peek ahead: batch consecutive DMA PUTs with FI_MORE. Flush every
+        /* Peek ahead: batch consecutive DMA PUTs via the optional
+           host_ops.rma_batch_hint hook. Flush every
            NVSHMEM_PROXY_FIMORE_FLUSH_INTERVAL ops (default 16, matches EFA's
-           internal flush cadence). */
-        int flush_interval = nvshmemi_options.PROXY_FIMORE_FLUSH_INTERVAL;
-        if (j != nvshmemi_options.PROXY_REQUEST_BATCH_MAX - 1 &&
-            (flush_interval <= 0 || (j % flush_interval) != flush_interval - 1)) {
-            uint64_t next_counter = ch->processed + PROXY_DMA_REQ_BYTES;
-            int next_flag = COUNTER_TO_FLAG(state, next_counter);
-            base_request_t *next_req = (base_request_t *)WRAPPED_CHANNEL_BUF(state, ch, next_counter);
-            uint8_t next_flag_val = __atomic_load_n(&next_req->flag, __ATOMIC_ACQUIRE) & 1;
-            if (next_flag_val == next_flag &&
-                (next_req->op == NVSHMEMI_OP_PUT || next_req->op == NVSHMEMI_OP_PUT_QP)) {
-                verb.flags = NVSHMEM_RMA_FLAG_MORE;
+           internal flush cadence). Transports that do not install the hook
+           pay zero cost (NULL-check below). */
+        struct nvshmem_transport *tcurr = state->transport[pe];
+        if (tcurr->host_ops.rma_batch_hint) {
+            uint32_t hint_flags = 0;
+            int flush_interval = nvshmemi_options.PROXY_FIMORE_FLUSH_INTERVAL;
+            if (j != nvshmemi_options.PROXY_REQUEST_BATCH_MAX - 1 &&
+                (flush_interval <= 0 || (j % flush_interval) != flush_interval - 1)) {
+                uint64_t next_counter = ch->processed + PROXY_DMA_REQ_BYTES;
+                int next_flag = COUNTER_TO_FLAG(state, next_counter);
+                base_request_t *next_req = (base_request_t *)WRAPPED_CHANNEL_BUF(state, ch, next_counter);
+                uint8_t next_flag_val = __atomic_load_n(&next_req->flag, __ATOMIC_ACQUIRE) & 1;
+                if (next_flag_val == next_flag &&
+                    (next_req->op == NVSHMEMI_OP_PUT || next_req->op == NVSHMEMI_OP_PUT_QP)) {
+                    hint_flags = NVSHMEM_RMA_FLAG_MORE;
+                }
             }
+            tcurr->host_ops.rma_batch_hint(tcurr, hint_flags);
         }
         void *rptr = (void *)((char *)(nvshmemi_device_state.heap_base) + roffset);
         nvshmemi_process_multisend_rma(state->transport[pe], state->transport_id[pe], pe, verb,
@@ -1187,7 +1193,6 @@ inline int process_channel_put_signal(proxy_state_t *state, proxy_channel_t *ch,
     write_verb.is_nbi = 1;
     write_verb.is_stream = 0;
     write_verb.cstrm = NULL;
-    write_verb.flags = 0;
     rwrite_ptr = (void *)((char *)(nvshmemi_device_state.heap_base) + rwrite_offset);
     lwrite_ptr = (void *)(((uint64_t)(ps_req_0->laddr_write_high) << 32) |
                           ((uint64_t)(ps_req_0->laddr_write_3) << 16) |

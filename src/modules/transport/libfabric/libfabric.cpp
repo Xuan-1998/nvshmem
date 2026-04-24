@@ -1137,7 +1137,12 @@ static int nvshmemt_libfabric_rma_impl(struct nvshmem_transport *tcurr, int pe, 
         else
             remote_addr = (uintptr_t)remote->offset;
 
-        if (verb.flags & NVSHMEM_RMA_FLAG_MORE) {
+        /* Read batching hint set by rma_batch_hint(). Sticky across chunks
+           of the same proxy request; the proxy resets it before every new
+           request (MORE or 0) so stale state cannot leak across requests. */
+        uint32_t rma_flags = libfabric_state->pending_rma_flags;
+
+        if (rma_flags & NVSHMEM_RMA_FLAG_MORE) {
             memset(&p_op_l_iov, 0, sizeof(p_op_l_iov));
             memset(&p_op_r_iov, 0, sizeof(p_op_r_iov));
             memset(&p_op_msg, 0, sizeof(p_op_msg));
@@ -1244,6 +1249,14 @@ out:
     }
 
     return status;
+}
+
+static void nvshmemt_libfabric_rma_batch_hint(struct nvshmem_transport *tcurr, uint32_t flags) {
+    /* Record the hint in transport-private state; it is consumed by the next
+       nvshmemt_libfabric_rma() call on this transport. Proxy is a single
+       progress thread so no synchronization is needed. */
+    nvshmemt_libfabric_state_t *libfabric_state = (nvshmemt_libfabric_state_t *)tcurr->state;
+    libfabric_state->pending_rma_flags = flags;
 }
 
 static int nvshmemt_libfabric_rma(struct nvshmem_transport *tcurr, int pe, rma_verb_t verb,
@@ -2044,6 +2057,7 @@ static int nvshmemt_libfabric_connect_endpoints(nvshmem_transport_t t, int *sele
     /* One-time initializations */
     t->max_op_len = UINT64_MAX;
     state->proxy_ep_cntr = 0;
+    state->pending_rma_flags = 0;
     state->fimore_pending_ep = -1;
 
     memset(&cq_attr, 0, sizeof(struct fi_cq_attr));
@@ -2614,6 +2628,7 @@ int nvshmemt_init(nvshmem_transport_t *t, struct nvshmemi_cuda_fn_table *table, 
     transport->host_ops.get_mem_handle = nvshmemt_libfabric_get_mem_handle;
     transport->host_ops.release_mem_handle = nvshmemt_libfabric_release_mem_handle;
     transport->host_ops.rma = nvshmemt_libfabric_rma;
+    transport->host_ops.rma_batch_hint = nvshmemt_libfabric_rma_batch_hint;
     transport->host_ops.fence = nvshmemt_libfabric_fence;
     transport->host_ops.quiet = nvshmemt_libfabric_quiet;
     transport->host_ops.finalize = nvshmemt_libfabric_finalize;

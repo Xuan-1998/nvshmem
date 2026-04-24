@@ -655,7 +655,13 @@ typedef struct {
     int num_selected_devs;
     int max_nic_per_pe;
     std::atomic<uint32_t> proxy_ep_cntr;
-    int fimore_pending_ep;  /* ep with deferred FI_MORE doorbell */
+    /* Set by rma_batch_hint() before the next rma() call: carries the
+       NVSHMEM_RMA_FLAG_MORE bit for the upcoming op. Read by rma(). */
+    uint32_t pending_rma_flags;
+    /* EP chosen for the last FI_MORE-deferred doorbell; -1 = none pending.
+       Used by rma() to stick to the same EP while a doorbell is deferred
+       so get_next_ep() does not rotate to a different rail mid-batch. */
+    int fimore_pending_ep;
 
     /* Required for staged_amo */
     std::vector<std::unique_ptr<threadSafeOpQueue>> op_queue;
